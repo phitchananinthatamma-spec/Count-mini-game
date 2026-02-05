@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>COUNT RAID</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body{
+  margin:0;background:#000;color:#eaffff;
+  font-family:system-ui,sans-serif;text-align:center;
+}
+.card{
+  background:#0b0b0b;border:1px solid #00ffcc;
+  box-shadow:0 0 20px #00ffcc55;
+  padding:20px;border-radius:16px;
+  max-width:420px;margin:20px auto;
+}
+input,button{
+  width:100%;padding:12px;margin:6px 0;
+  border-radius:10px;border:none;font-size:16px;
+}
+input{background:#111;color:#fff}
+button{background:#00ffcc;color:#000;font-weight:bold}
+.hidden{display:none}
+.scoreRow{display:flex;justify-content:space-between}
+</style>
+</head>
+
+<body>
+
+<h1>🎮 COUNT RAID</h1>
+
+<!-- LOBBY -->
+<div class="card" id="lobby">
+  <input id="playerName" placeholder="ชื่อผู้เล่น">
+  <input id="roomInput" placeholder="รหัสห้อง (เว้นว่างเพื่อสุ่ม)">
+  <button onclick="createRoom()">สร้างห้อง</button>
+  <button onclick="joinRoom()">เข้าห้อง</button>
+  <div id="roomCode"></div>
+</div>
+
+<!-- WAIT -->
+<div class="card hidden" id="waiting">
+  <h2>⏳ รอเพื่อน</h2>
+  <p id="waitingRoomCode"></p>
+  <div id="playerList"></div>
+  <button id="startBtn" class="hidden" onclick="startGame()">▶️ เริ่มเกม</button>
+</div>
+
+<!-- GAME -->
+<div class="card hidden" id="game">
+  <h3 id="question"></h3>
+  <input id="answerInput" placeholder="พิมพ์คำตอบ">
+  <button onclick="submitAnswer()">ส่งคำตอบ</button>
+  <p id="result"></p>
+
+  <button id="nextBtn" class="hidden" onclick="nextQuestion()">➡️ ข้อต่อไป</button>
+  <button id="restartBtn" class="hidden" onclick="restartGame()">🔄 เริ่มใหม่</button>
+
+  <h3>🏆 คะแนน</h3>
+  <div id="scoreBoard"></div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
+import { getDatabase, ref, set, update, onValue, get }
+from "https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAScwLSlNF1i0cAAT-xadJTFOgGUEsIilk",
+  authDomain: "count-raid-game.firebaseapp.com",
+  databaseURL: "https://count-raid-game-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "count-raid-game"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+/* ===== ELEMENT ===== */
+const playerNameInput = document.getElementById("playerName");
+const roomInput = document.getElementById("roomInput");
+const roomCodeDiv = document.getElementById("roomCode");
+const lobby = document.getElementById("lobby");
+const waiting = document.getElementById("waiting");
+const game = document.getElementById("game");
+const waitingRoomCode = document.getElementById("waitingRoomCode");
+const playerList = document.getElementById("playerList");
+const startBtn = document.getElementById("startBtn");
+const questionEl = document.getElementById("question");
+const answerInput = document.getElementById("answerInput");
+const result = document.getElementById("result");
+const nextBtn = document.getElementById("nextBtn");
+const restartBtn = document.getElementById("restartBtn");
+const scoreBoard = document.getElementById("scoreBoard");
+
+/* ===== STATE ===== */
+let roomCode="", playerId="", playerName="";
+let questions=[
+  {q:"มีเสื้อ 3 ตัว กางเกง 2 ตัว แต่งตัวได้กี่แบบ",a:6},
+  {q:"เรียง A B C ได้กี่แบบ",a:6},
+  {q:"เลือกหมวก 2 ใบ จาก 4 ใบ ได้กี่วิธี",a:6},
+  {q:"เลือกผลไม้ 1 อย่าง จาก 3 อย่าง",a:3}
+];
+
+/* ===== ROOM ===== */
+function randomRoom(){
+  return Math.random().toString(36).substring(2,6).toUpperCase();
+}
+
+window.createRoom = async ()=>{
+  playerName=playerNameInput.value.trim();
+  if(!playerName) return alert("ใส่ชื่อก่อน");
+  roomCode=roomInput.value||randomRoom();
+  playerId=Date.now().toString();
+
+  await set(ref(db,"rooms/"+roomCode),{
+    host:playerId,
+    started:false,
+    questionIndex:0,
+    players:{}
+  });
+
+  roomCodeDiv.innerText="รหัสห้อง: "+roomCode;
+  joinRoom(true);
+};
+
+window.joinRoom = async (host=false)=>{
+  playerName=playerNameInput.value.trim();
+  if(!playerName) return alert("ใส่ชื่อก่อน");
+  if(!host){
+    roomCode=roomInput.value.toUpperCase();
+    playerId=Date.now().toString();
+  }
+
+  const roomRef=ref(db,"rooms/"+roomCode);
+  const snap=await get(roomRef);
+  if(!snap.exists()) return alert("ไม่พบห้อง");
+
+  await update(ref(db,"rooms/"+roomCode+"/players/"+playerId),{
+    name:playerName,score:0,answered:false
+  });
+
+  lobby.classList.add("hidden");
+  waiting.classList.remove("hidden");
+  waitingRoomCode.innerText="ห้อง "+roomCode;
+
+  onValue(roomRef,s=>{
+    const d=s.val();
+    renderPlayers(d.players);
+    if(playerId===d.host) startBtn.classList.remove("hidden");
+    if(d.started) loadQuestion(d);
+  });
+};
+
+function renderPlayers(players){
+  playerList.innerHTML="";
+  Object.values(players||{}).forEach(p=>{
+    playerList.innerHTML+=`<div>👤 ${p.name}</div>`;
+  });
+}
+
+/* ===== GAME ===== */
+window.startGame=async()=>{
+  await update(ref(db,"rooms/"+roomCode),{
+    started:true,
+    questionIndex:0
+  });
+};
+
+function loadQuestion(data){
+  waiting.classList.add("hidden");
+  game.classList.remove("hidden");
+
+  if(data.questionIndex>=questions.length){
+    result.innerText="🎉 จบเกมแล้ว";
+    restartBtn.classList.remove("hidden");
+    nextBtn.classList.add("hidden");
+    return;
+  }
+
+  questionEl.innerText=questions[data.questionIndex].q;
+  answerInput.value="";
+  result.innerText="";
+  nextBtn.classList.add("hidden");
+
+  renderScores(data.players);
+}
+
+window.submitAnswer=async()=>{
+  const val=parseInt(answerInput.value);
+  if(isNaN(val)) return;
+
+  const roomRef=ref(db,"rooms/"+roomCode);
+  const snap=await get(roomRef);
+  const d=snap.val();
+  const q=questions[d.questionIndex];
+
+  let delta=val===q.a?10:-5;
+  result.innerText=val===q.a?"ถูก +10":"ผิด -5 | เฉลย "+q.a;
+
+  const pRef=ref(db,"rooms/"+roomCode+"/players/"+playerId);
+  const pSnap=await get(pRef);
+  await update(pRef,{score:pSnap.val().score+delta,answered:true});
+
+  if(playerId===d.host) nextBtn.classList.remove("hidden");
+};
+
+window.nextQuestion=async()=>{
+  await update(ref(db,"rooms/"+roomCode),{
+    questionIndex:firebase.database.ServerValue.increment(1)
+  });
+};
+
+window.restartGame=async()=>{
+  await update(ref(db,"rooms/"+roomCode),{
+    started:false,
+    questionIndex:0
+  });
+  location.reload();
+};
+
+function renderScores(players){
+  scoreBoard.innerHTML="";
+  Object.values(players||{}).forEach(p=>{
+    scoreBoard.innerHTML+=`
+      <div class="scoreRow">
+        <span>${p.name}</span><b>${p.score}</b>
+      </div>`;
+  });
+}
+</script>
+</body>
+</html>
